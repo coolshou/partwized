@@ -1,0 +1,22 @@
+#!/bin/sh
+#parser cmdline
+	for x in $(cat /proc/cmdline); do
+		case $x in
+			partimage=*)
+				export PARTIMAGE_CMD=${x#partimage=}
+			;;
+			partclone=*)
+				export PARTCLONE_CMD=${x#partclone=}
+			;;
+			ramdisk_size=*)
+				export RAMDISK_SIZE=${x#ramdisk_size=}
+			;;
+			root=*)
+				export ROOT=${x#root=}
+			;;
+			vga=*)
+				export VGA=${x#vga=}
+			;;
+		esac
+	done	
+

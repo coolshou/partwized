@@ -1,0 +1,4 @@
+#!/bin/bash
+
+#echo "exec autologin"
+#/bin/login  -p -f root

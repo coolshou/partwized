@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# udhcp renew/release
+# This script require /partwized/udhcpc.script 
+#  to setup pid in /var/run/udhcpc_${IFNAME}.pid
+
+[ -z "$1" ] && echo "Error: arg 1 should be interface name" && exit 1
+[ -z "$2" ] && echo "Error: arg 2 should be renew or release " && exit 1
+
+IFNAME=$1
+case $2 in
+	renew)
+		#renew
+		#kill -SIGUSR1 `cat /var/run/udhcpc_$(IFNAME).pid`
+		SIGNAME=-SIGUSR1
+	;;
+	release)
+		#release
+		#kill -SIGUSR2 `cat /var/run/udhcpc_$(IFNAME).pid`
+		SIGNAME=-SIGUSR2
+	;;
+esac
+
+
+kill $(SIGNAME) `cat /var/run/udhcpc_$(IFNAME).pid`

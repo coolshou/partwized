@@ -1,0 +1,195 @@
+#!/bin/sh
+#Script to be executed by busybox at bootup
+#
+#Modify to your needs
+#
+#link:ln -s <this script> /etc/init.d/rcS
+#link: ln -s bin/busybox /linuxrc
+
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/partwized
+export SHELL=/bin/bash
+
+echo "Mounting /proc"
+/bin/mount -t proc proc /proc
+
+echo "Re-mounting / with read-write permissions"
+/bin/mount -n -o remount,rw /
+sleep 3
+
+#echo "Re-mounting / with read-write permissions again"
+#/bin/mount -n -o remount,rw /
+
+## Added 5/2/2008 testing mdev to create devices
+/bin/mount -t sysfs sysfs /sys
+
+#uddev
+/bin/mount -t tmpfs tmpfs /dev 
+
+#parser /proc/cmdline
+source /partwized/kernelcmd
+	
+echo "Not loading any keymap -> US Layout"
+#if NON english, load binary(!!) keymap here
+#shipped keymap is german.
+#/sbin/loadkmap < /var/lib/kbd/keymap.map
+
+echo "Setting Hostname partwized"
+#set hostname to whatever you want, does not matter
+/bin/hostname partwized
+
+# Changed to have it test for file exist
+if [ -e /etc/mtab ]; then
+	echo "/etc/mtab exists"
+else
+	/bin/ln -s /proc/mounts /etc/mtab
+fi
+
+if [ ! -e /dev/null ];then
+	mknod -m 644 /dev/null c 1 3
+fi
+
+#TODO:for qemu CLGD 5446 PCI VGA
+#cirrusfb?vga16fb?
+#
+for x in $(cat /proc/cmdline); do
+	case $x in
+		video=*)
+			v=${x#video=}
+			echo "try to probe ${v}"
+			modprobe ${v}
+		;;
+		udev=*)
+			udev=${x#udev=}
+		;;	
+	esac
+done
+
+if [ "$udev" == "" ];then
+	udev=1
+fi
+#if [ `cat /proc/cmdline|grep "udev=0"` ];then
+#	udev=0
+#else	
+#	udev=1
+#fi
+
+if [ "${udev}" == "1" ];then
+	echo "Let udev to probe modules"
+	echo "/sbin/udev" > /proc/sys/kernel/hotplug
+	udevd --daemon
+	udevadm trigger
+	#actually loading modules
+	udevadm settle --timeout=120
+fi
+
+#dialog --pause "10 second pause to let everything finish loading" 12 52 10
+clear;
+
+if [ -d "/proc/bus/usb" ];then
+	mount -nt usbfs usbfs /proc/bus/usb	
+fi
+if [ "0" == "1" ];then
+	echo "Probing Firewire devices..."
+	#firewire?
+	if [ "`grep -o nofirewire /proc/cmdline`" != "nofirewire" ]; then
+		modprobe -q ieee1394 >/dev/null 2>&1
+		modprobe -q ohci1394 >/dev/null 2>&1
+		modprobe -q sbp2 >/dev/null 2>&1
+	fi
+fi
+
+if [ "${udev}" == "1" ];then
+	#retry failed udev events
+	udevadm trigger --retry-failed
+fi
+
+#if [ "`grep -o nohal /proc/cmdline`" != "nohal" ]; then
+		#start dbus
+#		echo "start hal"
+		#dbus-uuidgen --ensure
+		#dbus-daemon --system
+		#start HAL
+		#hald --daemon=yes
+#fi
+
+#bring up the local loopback
+ifconfig lo 127.0.0.1
+route add -net 127.0.0.0 netmask 255.0.0.0 lo
+
+#bring up other network interface
+if [ -e "/proc/net/dev" ];then
+	#TODO: check othe net device such as wireless
+	m=`cat /proc/net/dev|grep -v "Inter-"|grep -v "face"|awk -F":" '{print $1}'`
+	for a in ${m}
+	do
+		if [ "${a}" != "lo" ];then
+			#only bring up eth
+			if [ `echo ${a} |grep "eth"` ];then
+#				echo "ifconfig ${a} up"
+				ifconfig ${a} up
+			fi
+		fi
+	done
+fi
+
+#disable screen blanking
+setterm -blank 0
+
+#mouse support?
+#ln -s /dev/mice /dev/mouse
+if [ "`grep -o nogpm /proc/cmdline`" != "nogpm" ]; then
+	if [ -e `which gpm` ]; then
+		gpm -m /dev/input/mice -t ps2
+	fi
+fi
+
+#settig up autofs
+#modprobe autofs #already compiler in kernel
+#TODO: modify /etc/auto.misc
+#start autofs
+/etc/init.d/autofs start
+
+#hdd smart
+#echo "start hdd smartd"
+#/etc/init.d/smartd start
+
+#using udhcpc need kernel module af_packet
+
+##device=eth0
+## change 6/23/2007 new busybox shifted ip to field 3 instead of 4
+##ipaddress=`udhcpc -n -i $device -s/udhcpc.sh|grep Lease|cut -d\  -f3`
+##if [ -n $ipaddress ]; then
+##	/sbin/ifconfig $device $ipaddress up
+##else
+##  ipaddress=`udhcpc -n -i $device -s/udhcpc.sh|grep Lease|cut -d\  -f3`
+##  sleep 3
+##	/sbin/ifconfig $device $ipaddress up
+##fi
+##echo IP Address is: $ipaddress
+## added 6/17/2008 checks for eth? multi-devices
+## activates first one that gets a link from dhcp
+#/ifcheck2.sh
+#/testcd
+
+## 4/29/2008 added to load telnetd if kernel boot parameter
+## telnetd=yes is found
+#telnetd=`cat /proc/cmdline | grep telnetd`;
+#if [ -n "$telnetd" ] ; then 
+#	telnetd
+#fi
+
+#start logs
+echo "start syslog & klogd"
+if [ ! -e "/usr/var/log" ];then
+	mkdir -p /usr/var/log
+fi
+touch /usr/var/log/messages
+syslogd
+klogd
+
+
+#acpid 1.0.8(need  /proc/acpi/event)
+if [ -e /proc/acpi/event ];then
+	echo "start acpid"
+	acpid  -s /var/run/acpid.socket
+fi

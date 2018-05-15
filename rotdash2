@@ -1,0 +1,43 @@
+#!/bin/bash
+
+function rotdash2 () {
+	p=$1
+	if [ $2 ];then
+		echo -n "$2   "
+	else
+		echo -n "Please wait   "		
+	fi
+	while [ -d /proc/$p ]
+	do
+		echo -en '\E[32;40m/' ; sleep 0.1
+		echo -en '\E[32;40m-' ; sleep 0.1
+		echo -en '\E[32;40m\' ; sleep 0.1
+		echo -en '\E[32;40m|' ; sleep 0.1
+		echo -en '\E[32;42mS' ; 
+		tput sgr0 ; sleep 0.1
+	done
+	echo -e "\033[0;39m"
+	#| $DIALOG --backtitle "$backtitle" \
+	#		--title "Working..." --gauge "One moment..." 20 70
+}
+
+demo(){
+#: ${DIALOG=dialog}
+	#du /usr >/dev/null 2>&1 &
+	find / | awk '{ print (Total+=1),"=>",$0}' > /tmp/tmp 2>&1 & 
+	rotdash2 $!
+}
+
+if [ "$1" == "--help" ];then
+	echo "Usage:"
+	echo "	0. include this file in script with '. $0'"
+	echo "	1. execute a long run command at background"
+	echo "	2. rotdash2 \$!"
+	echo "	execute '$0 demo' to see demo"
+elif [ "$1" == "demo" ];then
+	demo;
+elif [ "$1" == "" ];then
+	echo ""
+else
+	rotdash2 $1 $2;
+fi

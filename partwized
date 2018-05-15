@@ -1,0 +1,1588 @@
+#!/bin/bash
+#partimage wizard
+projectname=partwized
+
+##basic tool
+#awk
+: ${AWK=awk}
+#lsof
+: ${LSOF=lsof}
+#grep
+: ${GREP=grep}
+#cat
+: ${CAT=cat}
+#uname
+: ${UNAME=uname}
+#dirname
+: ${DIRNAME=dirname}
+#basename
+: ${BASENAME=basename}
+
+
+: ${DIALOG=dialog}
+: ${DIALOG_OK=0}
+: ${DIALOG_CANCEL=1}
+: ${DIALOG_HELP=2}
+: ${DIALOG_EXTRA=3}
+: ${DIALOG_ESC=255}
+
+: ${APP_EXIT=0}
+: ${APP_AUTO="0"}
+
+: ${PARTED=parted}
+: ${BLKID=blkid}
+: ${MOUNTPOINT=mountpoint}
+: ${MountPath=/mnt}
+
+: ${PARTWIZEDlst=/grub/partwized/partwized.lst /grub/partwized.lst}
+: ${PARTWIZEDlstPath=/grub/partwized/partwized.lst}
+
+#backup/restore tool
+: ${PARTIMAGE=partimage}
+partimage_version=`${PARTIMAGE} -v |awk '{print $4}'`
+#TODO: ntfsclone + lzop compress 14G=>8G about 15min. check ntfs.sh
+#: ${NTFSCLONE=ntfsclone}
+#ntfsclone_version=`${NTFSCLONE} -h `
+: ${PARTCLONE=partclone}
+partclone_version=`${PARTCLONE}.restore -v|awk '{print $3}'`
+
+: ${MD5=md5sum}
+
+#LSOFres=`lsof -p $$ | grep -E "/"$(basename $0)"$" `
+#echo "LSOFres:$LSOFres"
+#MY_PATH=`echo "$LSOFres" |awk '{print $9}'`
+MY_PATH=`dirname $0`
+#echo "MY_PATH:$MY_PATH"
+#sleep 10
+
+version=`cat ${MY_PATH}/version |awk '{print $1}'`
+verdate=`cat ${MY_PATH}/version |awk '{print $2}'`
+author=jimmy
+kver=`uname -r`
+
+source ${MY_PATH}/functions
+
+
+# window title
+backtitle="$projectname $version $verdate, $author (wizard for partclone($partclone_version))"
+spacebartext="(use spacebar to select)"
+
+declare -i step=0
+declare -i laststep=0
+
+if [ ! -e "/var/run/" ];then
+	mkdir "/var/run/"
+fi
+LCK_FILE="/var/run/`basename $0`.lck"
+
+# write menulists
+partlist=""
+disklist=""
+
+declare -i maxH=20
+declare -i maxW=75
+declare -i maxFSelectH=10
+declare -i radiolistH=0
+maxHr="="
+#get screen height,width
+function getMaxHW () {
+	local mH
+	local mW
+	local fsH
+	local max
+
+	exec 3>&1
+	max=`${DIALOG} --print-maxsize 2>&1 1>&3`
+	exec 3>&-
+	max=`echo ${max}|awk -F ": " '{print $2}' `
+	if [  "${max}" != "" ];then
+		mH=`echo "${max}"|awk -F", " '{print $1}'`
+		mW=`echo "${max}"|awk -F", " '{print $2}'`
+		if [ ${mH} -gt ${maxH} ];then
+			maxH=${mH}
+		fi
+		fsH=`expr ${mH} - 15`
+		if [ "${fsH}" -gt "${maxFSelectH}" ];then
+			maxFSelectH=${fsH}
+		fi
+		if [ ${mW} -gt ${maxW} ];then
+			maxW=${mW}
+		fi
+		if [ ${maxH} -gt 5 ];then
+			maxH=`expr ${maxH} - 5`
+		fi
+		if [ ${maxW} -gt 5 ];then
+			maxW=`expr ${maxW} - 5`
+		fi
+		if [ "${DEBUG}" == "1" ];then
+			echo "H/W:${maxH}/${maxW}"
+		fi
+	fi
+	setMaxHR
+}
+#make a ==== line for later use
+function setMaxHR (){
+	local -i a=1
+	local -i b=5
+	b=`expr ${maxW} - 5`
+	for ((a=1; a<=${b}; a++))
+	do
+		maxHr=${maxHr}"="
+	done
+}
+function getRadioListH () {
+	local n=4
+	if [ "$1" != "" ];then
+		n=$1
+	fi
+	if [ ${maxH} -gt $n ];then
+		radiolistH=`expr ${maxH} - $n`
+	else
+		radiolistH=0
+	fi
+}
+
+createTemp()
+{
+	export tempfile${1}="/tmp/test${1}$$"
+}
+#create tmpPM
+createTemp PM
+
+#partimage/partclone para
+pTool=""
+pAction=""
+pDevice=""
+pImageFile=""
+pCompress=""
+pFinish=""
+pDescription=""
+
+#dialog return value
+retvalAction=""
+retvalDevice=""
+retvalImageFile=""
+retvalOption=""
+
+#partition list for showing in dialog
+plist=""
+
+return_val=""
+
+
+function getPartlist () {
+	partlist="";
+	`${BLKID} > /tmp/blkid`
+	while read LINE
+	do
+		#echo "LINE: $LINE"
+		xxlabel=""
+		xxuuid=""
+		xxtype=""
+		xxdev=""
+		for x in $(echo $LINE); do
+			case $x in
+				LABEL=*)
+					xxlabel=${x#LABEL=\"}
+					xxlabel=${xxlabel%\"}
+				;;
+				UUID=*)
+					xxuuid=${x#UUID=}
+				;;
+				TYPE=*)
+					xxtype=${x#TYPE=\"}
+					xxtype=${xxtype%\"}
+				;;
+				/dev*:)
+					#xxdev=`echo $ | cut -f1 -d\  `;
+					#len=`length $x`
+					#len=`expr $len - 1`
+					#xxdev=`echo $x | cut -c1-$len`;
+					xxdev=`echo ${x%:}`;
+				;;
+			esac
+		done
+		tmp=`basename $xxdev`
+		xxsize=`cat /proc/partitions |grep $tmp |awk '{print $3}'`
+		xxsize2=`echo ${#xxsize}`;
+		pad="";
+		for ((a=xxsize2;a<=12;a++))
+		do
+			pad=$pad\_;
+		done
+
+		partlist="$partlist
+			`printf "%s %s%s:%s(%s) off" $xxdev  $pad $xxsize $xxlabel $xxtype `";
+	done </tmp/blkid
+}
+
+function getDisklist () {
+	local s
+	local h
+	s=`ls /dev/sd[a-z] 2>/dev/null | grep -v "No"`
+	h=`ls /dev/hd[a-z] 2>/dev/null | grep -v "No"`
+	disklist="$s $h"
+}
+
+
+#select  using tool partimage/partclone (default)
+function step0 () {
+	local s1=OFF
+	local s2=On
+	case ${pTool} in
+		partimage)
+			s1=On
+			s2=OFF
+		;;
+		partclone)
+			s1=OFF
+			s2=On
+		;;
+	esac
+	exec 3>&1
+	pTool=`${DIALOG} --backtitle "$backtitle" \
+		--title "step ${step}" \
+		--radiolist "${spacebartext}" ${maxH} ${maxW} ${radiolistH} \
+		"partimage" "use partimage to save/restore partition to file" ${s1} \
+		"partclone" "use partclone to save/restore partition to file" ${s2} \
+		 2>&1 1>&3`
+	retvalAction=$?
+	exec 3>&-
+	case ${retvalAction} in
+		$DIALOG_OK)
+			setStep 1
+		;;
+		$DIALOG_CANCEL)
+			setStep -1
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "exit chose partimage or partclone tool" -1
+		;;
+	esac
+}
+
+function step1 () {
+	local s1=On
+	local s2=OFF
+	local s3=OFF
+	case ${pAction} in
+		save)
+			s1=On
+			s2=OFF
+			s3=OFF
+		;;
+		restore)
+			s1=OFF
+			s2=On
+			s3=OFF
+		;;
+	esac
+	#auto select
+	exec 3>&1
+	pAction=`${DIALOG} --backtitle "$backtitle" \
+		--title "step ${step}" \
+		--radiolist "${spacebartext}" ${maxH} ${maxW} ${radiolistH} \
+		"save" "save the partition data to an image file" ${s1} \
+		"restore" "restore the partition data from an image file"  ${s2} \
+		"manual" "start partimage do every thing by your self"  ${s3} \
+		 2>&1 1>&3`
+	retvalAction=$?
+	exec 3>&-
+	case ${retvalAction} in
+		$DIALOG_OK)
+			if [ "${pAction}" != "" ];then
+				if [ "${pAction}" == "manual" ];then
+					setStep 100
+				else
+					setStep 2
+				fi
+			else
+				 $DIALOG --backtitle "$backtitle" \
+				 	--msgbox "select Action first!!" 5 30
+			fi
+		;;
+		$DIALOG_CANCEL)
+			decStep
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "" 1
+		;;
+	esac
+}
+
+#device select
+function step2 () {
+	local a=""
+	#not show swap, extended
+#	plist=`echo "${partlist}"|grep -v "swap"|grep -v "Extended"`
+	updatePlist;
+	#echo $plist
+
+	exec 3>&1
+	choiceDevice=`$DIALOG --backtitle "$backtitle" \
+		--title "step ${step}" \
+		--radiolist "Choose Drive or Partition to ${pAction}${spacebartext}." \
+		${maxH} ${maxW} ${radiolistH} \
+		$plist \
+		2>&1 1>&3`
+	retvalDevice=$?
+	exec 3>&-
+	case $retvalDevice in
+		$DIALOG_OK)
+			if [ "${choiceDevice}" != "" ];then
+				pDevice=$choiceDevice
+				#echo $pDevice
+				#sleep 10
+				setStep 3
+			else
+				$DIALOG --backtitle "$backtitle" \
+				 	 --msgbox "Select Device first!!" 5 30
+			fi
+		;;
+		$DIALOG_CANCEL)
+			decStep
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "" 2
+		;;
+	esac
+}
+
+#target imagefile select
+function step3 () {
+	local fname=""
+	local msg="the file name will auto add .partimg as ext, and also add .gz or .bz2 depend on compress mode selected"
+	if [ "${pImageFile}" != "" ];then
+		if [ -e "${pImageFile}" ];then
+			fname="${pImageFile}"
+		fi
+	fi
+	if [ "${fname}" == "" ];then
+		fname="${MountPath}/"
+	fi
+	#mount all paratition except selected device
+	mountALL;
+	if [ "pAction" == "save" ];then
+		msg="$backtitle ${msg}"
+	else
+		msg="$backtitle"
+	fi
+	exec 3>&1
+	pImageFile=`$DIALOG --backtitle "${msg}" \
+		--title "Choose Image file name for ${pAction}${spacebartext}." \
+		--fselect "${fname}"  ${maxFSelectH} ${maxW} \
+		2>&1 1>&3`
+	retvalImageFile=$?
+	exec 3>&-
+	case $retvalImageFile in
+		$DIALOG_OK)
+			#save, file can be not exists, but directory must exists
+			#make sure user not using other directory the /mnt/...?
+			getMountPath "${pImageFile}"
+			if [ "${return_val}" == "" ];then
+				ErrorMsg "You must set the Image file at mounted partition in /mnt/[x]d[y][z]/....such as /mnt/sda1 \n \
+	where [x],[y],[z] represent as \n \
+		x: s=scsi,sata, h=ide	\n \
+		y: a=disk 1, b=disk 2 and so on \n \
+		z: 1=partition 1, 2=partition 2 and so on"
+				pImageFile=""
+				return 0
+			fi
+			if [ -d "${pImageFile}" ];then
+				echo "select dir: ${pImageFile}"
+				ErrorMsg "You must select a file not a path:${pImageFile}"
+			elif [ -f "${pImageFile}" ];then
+				if [ "${pAction}" == "save" ];then
+					$DIALOG --backtitle "$backtitle" \
+						 --yesno "Image file:${pImageFile} already exists, \
+						the file will be overwrited after backup finish, continus?" 8 30
+					case $? in
+						$DIALOG_OK)
+							setStep 4
+						;;
+						$DIALOG_CANCEL)
+							decStep
+						;;
+					esac
+				elif [ "${pAction}" == "restore" ];then
+					setStep 5
+				else
+					ErrorMsg "unknown Action(step3,file exists)"
+				fi
+			else
+				if [ "${pAction}" == "save" ];then
+					setStep 4
+				elif [ "${pAction}" == "restore" ];then
+					$DIALOG --backtitle "$backtitle" \
+						--msgbox "Must select a image file for restore!!" 5 30
+				else
+					ErrorMsg "unknown Action(step3)"
+				fi
+			fi
+		;;
+		$DIALOG_CANCEL)
+			decStep
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "" 3
+		;;
+	esac
+}
+
+#save need to ask
+function step4 () {
+	local s1=OFF
+	local s2=On
+	local s3=OFF
+	local s4=OFF
+	case ${pCompress} in
+		0)
+			s1=On
+			s2=OFF
+			s3=OFF
+			s4=OFF
+		;;
+		1)
+			s1=OFF
+			s2=On
+			s3=OFF
+			s4=OFF
+		;;
+		2)
+			s1=OFF
+			s2=OFF
+			s3=On
+			s4=OFF
+		;;
+	esac
+	#--compress=?
+	exec 3>&1
+	pCompress=`$DIALOG --backtitle "$backtitle" \
+		--title "step ${step}" \
+		--radiolist "select compression level"  \
+		${maxH} ${maxW} ${radiolistH} \
+		"0" "Don't compress: very fast but very big image file" ${s1} \
+		"1" "Compress using gzip: fast and small image file" ${s2} \
+  		"2" "Compress using bzip2: very slow and very small image file" ${s3} \
+  		"3" "Compress using zx: middle compress speed and smallest image file" ${s4} \
+		2>&1 1>&3`
+	retvalCompress=$?
+	exec 3>&-
+	case $retvalCompress in
+		$DIALOG_OK)
+			setStep 5
+		;;
+		$DIALOG_CANCEL)
+			decStep
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "" 4
+		;;
+	esac
+}
+
+function step5 () {
+	local s1=OFF
+	local s2=OFF
+	local s3=On
+	local s4=OFF
+	case ${pFinish} in
+		0)
+			s1=On
+			s2=OFF
+			s3=OFF
+			s4=OFF
+		;;
+		1)
+			s1=OFF
+			s2=On
+			s3=OFF
+			s4=OFF
+		;;
+		2)
+			s1=OFF
+			s2=OFF
+			s3=On
+			s4=OFF
+		;;
+		3)
+			s1=OFF
+			s2=OFF
+			s3=OFF
+			s4=On
+		;;
+	esac
+
+	#--finish
+	exec 3>&1
+	pFinish=`$DIALOG --backtitle "$backtitle" \
+		--title "step ${step}" \
+		--radiolist "action to do if finished successfully"  \
+		${maxH} ${maxW} ${radiolistH} \
+		"0"	"wait: don't make anything" ${s1} \
+		"1"	"halt (power off) the computer" ${s2} \
+		"2"	"reboot (restart the computer)" ${s3} \
+		"3"	"quit" ${s4} \
+		2>&1 1>&3`
+	retvalFinish=$?
+	exec 3>&-
+	case $retvalFinish in
+		$DIALOG_OK)
+			setStep 6
+		;;
+		$DIALOG_CANCEL)
+			if [ "${pAction}" == "restore" ];then
+				setStep 3
+			else
+				setStep 4
+			fi
+		;;
+		$DIALOG_ESC)
+			ErrorMsg "" 5
+		;;
+	esac
+}
+
+function step6 () {
+	local vExt
+	if [ "${pAction}" == "save" ];then
+	#add file ext
+		if [ "${pImageFile##*.}" != "${pTool}" ];then
+			pImageFile="${pImageFile}.${pTool}"
+		fi
+		#include the fstype to ${pImageFile} filename
+		getFsType ${pDevice}
+		if [ "$?" == "0" ];then
+			pImageFile=${pImageFile}.${G_FsType}
+		fi
+		case ${pCompress} in
+			0)
+				vExt=""
+			;;
+			1)
+				vExt=".gz"
+			;;
+			2)
+				vExt=".bz2"
+			;;
+			3)
+				vExt=".xz"
+			;;
+		esac
+		if [ "${pCompress}"=="1" ] || [ "${pCompress}"=="2" ] || [ "${pCompress}"=="3" ];then
+			if [ "${pImageFile##*.}" != "${vExt}" ];then
+				pImageFile=${pImageFile}${vExt}
+			fi
+		fi
+	fi
+	if [ -f "${pImageFile}" ];then
+		if [ "${pAction}" == "save" ];then
+			exec 3>&1
+			pOverwrite=`$DIALOG --backtitle "$backtitle" \
+				 --yesno "Image file already exists, \
+				it wil be overwrite when backup, continus?" 8 30`
+			retvalOverwrite=$?
+			exec 3>&-
+			case $retvalOverwrite in
+				$DIALOG_OK)
+					setStep 7
+				;;
+				$DIALOG_CANCEL)
+					setStep 3
+				;;
+			esac
+		elif [ "${pAction}" == "restore" ];then
+			setStep 8
+		else
+			ErrorMsg "step6:${pImageFile} exist: unknown action:${pAction}" 61
+		fi
+	else
+		if [ "${pAction}" == "restore" ];then
+			ErrorMsg "${pImageFile} not found for restore!"
+			setStep 3
+			return 1
+		elif [ "${pAction}" == "save" ];then
+			setStep 7
+		else
+			ErrorMsg "step6:${pImageFile} not exist: unknown action:${pAction}" 61
+		fi
+	fi
+}
+#save description
+function step7 () {
+	#sleep 10
+	exec 3>&1
+	pDescription=`$DIALOG --backtitle "$backtitle" \
+		 --inputbox "Please input image Description" ${maxH} ${maxW}  \
+		2>&1 1>&3 `
+	retvalDescription=$?
+	exec 3>&-
+	case $retvalDescription in
+		$DIALOG_OK)
+			setStep 8
+		;;
+		$DIALOG_CANCEL)
+			setStep 5
+		;;
+	esac
+}
+#save/restore need to umount device
+function step8 () {
+	local m=""
+	if [ "${pDevice}" != "" ];then
+		umountDev ${pDevice}
+		setStep 9
+	else
+		ErrorMsg "pDevice(${pDevice}) not set!"
+		setStep 2
+	fi
+}
+
+#real partimage action
+function step9 () {
+	local d=""
+	local newmenu=""
+	local mainmenu=""
+	local vFs
+	#echo "pTool		: ${pTool}"
+	#echo "pAction		: ${pAction}"
+	#echo "pDevice		: ${pDevice}"
+	#echo "pImageFile	: ${pImageFile}"
+	#echo "pCompress	: ${pCompress}"
+	#echo "pFinish		: ${pFinish}"
+	#echo "pDescription	: ${pDescription}"
+	if [ "${pAction}" == "" ]||[ "${pDevice}" == "" ]||
+       [ "${pImageFile}" == "" ];then
+		$DIALOG --backtitle "$backtitle" \
+			--msgbox "Some value are messing: \n
+			pAction=${pAction} \n
+			pDevice=${pDevice} \n
+			pImageFile=${pImageFile}" ${maxH} ${maxW}
+		setStep 1;
+		return
+	fi
+	if [ "${pTool}" == "partimage" ];then
+		#run in batch mode ,  overwrite the existing image file without confirmation
+		#auto split when no space (one big file)
+		pMisc=" --batch  --overwrite  --nocheck -V=auto"
+		if [ "${pCompress}" != "" ];then
+			pMisc="${pMisc} --compress=${pCompress}"
+		fi
+		if [ "${pFinish}" != "" ];then
+			#pMisc="${pMisc} --finish=${pFinish}"
+			#1,2,3 quit program then do what pFinish should do...
+			if [ "${pFinish}" == "0" ];then
+				pMisc="${pMisc} --finish=${pFinish}"
+			else
+				#1,2,3 all do quit
+				pMisc="${pMisc} --finish=3"
+			fi
+		fi
+		#umount not using partition except the location of image file for save/restore
+		return_val="${PARTIMAGE} ${pMisc} ${pAction} ${pDevice} ${pImageFile}"
+		echo "${PARTIMAGE} ${pMisc} ${pAction} ${pDevice} ${pImageFile}"
+		${PARTIMAGE} ${pMisc} ${pAction} ${pDevice} ${pImageFile}
+
+	elif [ "${pTool}" == "partclone" ];then
+		#partclone useag:
+			#To backup without compression:
+			#> partclone.ext4 -c -s /dev/sda1 -o ~/image_sda1.pcl
+			#To restore it:
+			#> partclone.ext4 -r -s ~/image_sda1.pcl -o /dev/sda1
+
+			#With compression, This time, backup with compression:
+			#> partclone.ext4 -c -s /dev/sda1 | gzip -c > ~/image_sda1.pcl.gz
+			#Note: For maximum compression use "gzip -c9"
+			#Restore it:
+			#> zcat ~/image_sda1.pcl.gz | partclone.ext4 -r -o /dev/sda1
+		#####################
+		return_val=""
+		if [ "${pAction}" == "save" ];then
+			#pDevice = file system?
+			getFsType ${pDevice}
+			if [ "$?" == "0" ];then
+				#${pImageFile} => pCompress
+				vExt=${G_FsType}
+				if [ "$vExt" == "" ];then
+					vExt=ext3
+				fi
+
+				cmd1=""
+				if [ ${pCompress} -eq 0 ];then
+					return_val="${PARTCLONE}.${vExt} -c -s ${pDevice}  -o ${pImageFile}"
+					${PARTCLONE}.${vExt} -c -s ${pDevice}  -o ${pImageFile}
+				elif [ ${pCompress} -eq 1 ];then
+					#gzip
+					return_val="${PARTCLONE}.${vExt} -c -s ${pDevice} | gzip -c > ${pImageFile}"
+					${PARTCLONE}.${vExt} -c -s ${pDevice} | gzip -c > ${pImageFile}
+				elif [ ${pCompress} -eq 2 ];then
+					#bzip2
+					return_val="${PARTCLONE}.${vExt} -c -s ${pDevice} | bzip2 -c > ${pImageFile}"
+					${PARTCLONE}.${vExt} -c -s ${pDevice} | bzip2 -c > ${pImageFile}
+				elif [ ${pCompress} -eq 3 ];then
+					#xz
+					return_val="${PARTCLONE}.${vExt} -c -s ${pDevice} | xz -1 -z -c > ${pImageFile}"
+					${PARTCLONE}.${vExt} -c -s ${pDevice} | bzip2 -c > ${pImageFile}
+				else
+					ErrorMsg "pCompress level unknown: $pCompress" 300
+				fi
+			else
+				ErrorMsg "device fs_type get fail" 303
+			fi
+		elif [ "${pAction}" == "restore" ];then
+			#TODO chech md5?
+			reVal=0
+			#if [ -e "${pImageFile}.md5" ];then
+			#	echo "check ${pImageFile} md5"
+			#	${MD5} -c ${pImageFile}.md5
+			#	reVal=$?
+			#fi
+
+			#remove .gz or .bz2
+			set vFs=${pImageFile%%.gz}
+			set vFs=${vFs%%.bz2}
+			#remove string before .
+			set vFs=${vFs##*.}
+			if [ "$vFs" == "ext3" ]||[ "$vFs" == "ext4" ]||[ "$vFs" == "ext2" ];then
+				echo "$vFs"
+			else
+				vFs=ext3
+			fi
+			if [ $reVal -eq 0 ];then
+				if [  "${pImageFile##*.}" == "gz" ];then
+					#gzip decompress first
+					return_val="gzip -d -c ${pImageFile} | ${PARTCLONE}.restore -r -o ${pDevice}"
+					gzip -d -c ${pImageFile} | ${PARTCLONE}.${vFs} -r -o ${pDevice}
+				elif [ "${pImageFile##*.}" == "bz2" ];then
+					#bzip2 decompress first
+					return_val="bzip2 -d -c  ${pImageFile} | ${PARTCLONE}.restore -r -o ${pDevice}"
+					bzip2 -d -c  ${pImageFile} | ${PARTCLONE}.${vFs} -r -o ${pDevice}
+				elif [ "${pImageFile##*.}" == "xz" ];then
+					#xz decompress first
+					return_val="xz -d -c  ${pImageFile} | ${PARTCLONE}.restore -r -o ${pDevice}"
+					bzip2 -d -c  ${pImageFile} | ${PARTCLONE}.${vFs} -r -o ${pDevice}
+				else
+					return_val="${PARTCLONE}.restore -r -o ${pDevice} -s ${pImageFile}"
+					${PARTCLONE}.${vFs} -r -o ${pDevice} -s ${pImageFile}
+				fi
+			else
+				ErrorMsg "${pImageFile} md5 check fail " 200
+			fi
+		else
+			ErrorMsg "unknown pAction: ${pAction}" 301
+		fi
+	else
+		ErrorMsg "unknown pTool: ${pTool}" 302
+	fi
+
+	res=$?
+	if [ "${res}" == "0" ];then
+		if [ "${pAction}" == "save" ];then
+			#TODO: create md5 for the saved image file?
+			echo "${MD5} ${pImageFile} > ${pImageFile}.md5"
+			${MD5} ${pImageFile} > ${pImageFile}.md5
+			createMenu
+			#add menu to main menu
+			if [ "$?" == "0" ];then
+				newmenu=${return_val}
+				#find the main partwized.lst
+				foundMenu ${PARTWIZEDlst}
+				if [ "$?" == "0" ];then
+					mainmenu=${return_val}
+					linkMenu ${newmenu} ${mainmenu}
+					if [ "$?" != "0" ];then
+						ErrorMsg "link  menu ${newmenu} & ${mainmenu} fail"
+					fi
+				else
+					ErrorMsg "can't found menu:${PARTWIZEDlst}"
+				fi
+			else
+				ErrorMsg "create menu fail"
+			fi
+		fi
+		if [ "${pFinish}" == "1" ];then
+			#power off
+			exec 3>&1
+			$DIALOG --backtitle "$backtitle" \
+				--pause "Wait to poweroff" 10 30 10 \
+				2>&1 1>&3
+			retval=$?
+			exec 3>&-
+			case $retval in
+				$DIALOG_OK)
+					poweroff -d 0
+				;;
+				$DIALOG_CANCEL)
+					ErrorMsg "" 0
+				;;
+				$DIALOG_ESC)
+					ErrorMsg "" 0
+				;;
+			esac
+		elif [ "${pFinish}" == "2" ];then
+			#reboot
+			exec 3>&1
+			$DIALOG --backtitle "$backtitle" \
+				--pause "Wait to reboot" 10 30 10 \
+				2>&1 1>&3
+			retval=$?
+			exec 3>&-
+			case $retval in
+				$DIALOG_OK)
+					reboot -d 0
+				;;
+				$DIALOG_CANCEL)
+					ErrorMsg "" 0
+				;;
+				$DIALOG_ESC)
+					ErrorMsg "" 0
+				;;
+			esac
+		else
+			ErrorMsg "not supportted finish action: ${pFinish}" 303
+		fi
+		ErrorMsg "" 0
+	else
+		ErrorMsg "${PARTIMAGE} execution fail!!(${res}) \n ${return_val}" 999
+	fi
+}
+
+#manual running partimage
+function step100 () {
+	${PARTIMAGE}
+	clear
+	exit 0
+}
+
+#create grub menu
+function createMenu () {
+	local a=""
+	local dest=""
+	local src=""
+	local pwized=""
+	local kernelOpt=""
+	local r=""
+	local msg=""
+	local newMenu=""
+	if [ "${pAction}" == "save" ];then
+		if [ "${pTool}" == "partimage" ];then
+			#if pImageFile content .000 ext rename it
+			pImageFile=${pImageFile%.000}
+			if [ -e ${pImageFile}.000 ];then
+				mv ${pImageFile}.000 ${pImageFile}
+			fi
+		fi
+		newMenuFile=${pImageFile}.lst
+		dev2pnum ${pDevice}
+		if [ "$?" == "0" ];then
+			dest=${return_val};
+			dest="dest=$dest"
+		fi
+		getMountPath "${pImageFile}"
+		a="${return_val}"
+		#we found mount point=> convert to /dev
+		b=`cat /proc/mounts | grep "$a" |awk '{print $1}'`
+		dev2pnum ${b}
+		if [ "$?" == "0" ];then
+			src=${return_val};
+			src="src=$src${pImageFile#$a}"
+		fi
+		if [ "${pTool}" == "partimage" ];then
+			pwized="partimage=action=restore,$src,$dest,finish=reboot"
+		fi
+		if [ "${pTool}" == "partclone" ];then
+			pwized="partclone=action=restore,$src,$dest,finish=reboot"
+		fi
+		kernelOpt=""
+#		ext2 base initrd
+#		kernelOpt="rw ramdisk_size=${RAMDISK_SIZE} root=${ROOT} "
+		if [ "${VGA}" != "" ];then
+			kernelOpt="${kernelOpt} vga=${VGA}"
+		fi
+		if [ -e "/usr/bin/splashy" ];then
+			kernelOpt="${kernelOpt} splash"
+		fi
+		ff=${newMenuFile#$a}
+
+		msg="Following lines between \"=\" will add to grub4dos's partwized.lst for auto restore item. You may also use the $ff as grub4dos configfile manual"
+		msg=${msg}"\n${maxHr}\n"
+		#new menu
+		newMenu="timeout		2\n\
+title restore ${ff%.lst} to ${pDevice} \n\
+	find --set-root ${PARTWIZEDlstPath}	\n\
+	kernel /grub/partwized/vmlinuz  ${kernelOpt} ${pwized} \n\
+	initrd /grub/partwized/partwized.img.gz	\n"
+		echo -e "${newMenu}" > "$newMenuFile"
+		msg=${msg}${newMenu}
+		msg=${msg}"\n${maxHr}"
+
+		$DIALOG --backtitle "$backtitle"  --clear  \
+			--pause "${msg}" ${maxH} ${maxW} 10
+#			--msgbox "${msg}" ${maxH} ${maxW}
+		return_val=${newMenuFile}
+		return 0
+	else
+		return_val=""
+		return 1
+	fi
+}
+
+
+function foundMenu () {
+	local m=""
+	local f=""
+	#m: menu file with full path to be found
+	m=$1
+	if [ "${m}" == "" ];then
+		ErrorMsg "foundMenu: menu file name not specify"
+		return_val=""
+		return 1
+	else
+		#search all mounted partition
+		#TODO: this will take too long of time
+		#found in /mnt
+		for b in $m
+		do
+			echo "start finding $b in /mnt"
+			for a in `ls /mnt`
+			do
+				echo -n "."
+				f="/mnt/$a/$b"
+				if [ -e "$f" ];then
+					return_val="$f"
+					return 0
+				fi
+			done
+		done
+		ErrorMsg "foundMenu: menu '${m}' not found."
+		return_val=""
+		return 1
+	fi
+}
+#$1:main menu
+#$2:file name
+function linkMenu () {
+	local m=""
+	local lm=""
+	local f=""
+	local lf=""
+	local a=
+	local msg=""
+	local -i lnum=0
+	#main menu.lst
+	mainMenuFile=$2
+	#new menu.lst
+	newMenuFile=$1
+	if [ "${mainMenuFile}" == "" ]||[ "${newMenuFile}" == "" ];then
+		ErrorMsg "arg not enough,arg1=$mainMenuFile,arg2=$newMenuFile"
+		return_val=""
+		return 1
+	else
+		#get string in text file's line number
+		lnum=`awk '/###AUTO EDIT/{print NR}' ${mainMenuFile}`
+		if [ "${lnum}" == "" ];then
+			lnum=0
+		fi
+		#just add a item link to the $newMenuFile
+		#remove mount point in $newMenuFile
+		getMountPath $newMenuFile
+		a=${return_val}
+		lf=${newMenuFile#${a}}
+		msg="title restort ${lf%.lst} \n\
+	find --set-root $lf \n\
+	configfile $lf \n\
+	"
+		echo -e "${msg}" > "${newMenuFile}.tmp"
+
+		#insert text file to a text file's specify line
+		sed ${lnum}'r '"${newMenuFile}.tmp" < "${mainMenuFile}" > "${mainMenuFile}.tmp"
+		mv "${mainMenuFile}.tmp" "${mainMenuFile}"
+		rm 	"${newMenuFile}.tmp"
+
+		#new menu add item to link back to main-menu
+		getMountPath "$mainMenuFile"
+		a="${return_val}"
+		lm=${mainMenuFile#${a}}
+		msg="title return to menu `basename $lm` \n\
+	find --set-root $lm \n\
+	configfile $lm \n\
+	"
+		echo -e "${msg}" > "${mainMenuFile}.tmp"
+		#append to last line
+		cat "${mainMenuFile}.tmp" | tee -a "${f}"
+
+		rm "${mainMenuFile}.tmp"
+		return 0
+	fi
+}
+
+#convert /dev/sda2 => 1:2 (if sda is the first disk in system)
+function dev2pnum () {
+	local p=""
+	local d=""
+	local a=""
+	declare -i i=1
+	p=`basename $1`
+	d=${p:0:3}
+	p=${p:3:1}
+	for a in ${disklist}
+	do
+		echo "$a"|grep $d 1>/dev/null
+		if [ "$?" == "0" ];then
+			d=$i
+			break
+		fi
+		i=`expr $i + 1`
+	done
+	return_val="$d:$p"
+	return 0
+}
+#convert 1:2 => /dev/sda2 (if sda is the first disk in system)
+function pnum2dev () {
+	local d=""
+	local p=""
+	local a=""
+	declare -i i=1
+	d=$1
+	p=`echo "${d}"|awk -F":" '{print $2}'`
+	d=`echo "${d}"|awk -F":" '{print $1}'`
+	#device's paration
+	for a in ${disklist}
+	do
+		if [ "$i" == "$d" ];then
+			d=$a
+			break
+		fi
+		i=`expr $1 + 1`
+	done
+	return_val="$d$p"
+	return 0
+
+}
+
+function setStep () {
+	declare -i n=0
+	if [ "$1" != "" ];then
+		n=$1
+	fi
+	laststep=${step}
+	step=$n
+}
+
+function decStep () {
+	laststep=${step}
+	step=`expr ${step} - 1`
+}
+
+
+#get fs_type from partition
+G_FsType=""
+function getFsType () {
+	local m=""
+	G_FsType=""
+	m=`${BLKID} "$1"`
+	if [ "${m}" != "" ];then
+		#some value should init here
+		local fs_type=""
+		for a in ${m};do
+			case ${a} in
+				/dev*)
+				;;
+				TYPE*)
+					fs_type=${a#TYPE=}
+					#remove " "
+					G_FsType=`echo ${fs_type//\"/}`
+				;;
+				UUID*)
+				;;
+				LABEL*)
+				;;
+			esac
+		done
+	fi
+	if [ "$G_FsType" != "" ];then
+		#we get fs_type,
+		return 0
+	else
+		return 1
+	fi
+}
+#arg:
+#$1= xxx in /dev
+function mountDev () {
+	local dev=""
+	local m=""
+	local a=""
+	local fs_type=""
+	dev=`basename $1`
+	if [ "$dev" != "" ];then
+		m=`${BLKID} "/dev/${dev}"`
+		if [ "${m}" != "" ];then
+			#some value should init here
+			fs_type=""
+			for a in ${m};do
+				case ${a} in
+					/dev*)
+					;;
+					TYPE*)
+						fs_type=${a#TYPE=}
+						#remove " "
+						fs_type=`echo ${fs_type//\"/}`
+					;;
+					UUID*)
+					;;
+					LABEL*)
+					;;
+				esac
+			done
+			cat /proc/mounts |grep "/dev/${dev}" 1>/dev/null
+			if [ ! "$?" == "1" ];then
+				#if /dev/xxx mount to other place, ignore it
+				echo "/dev/${dev} already mounted!"
+				#current mount point?
+				return_val=`cat /proc/mounts |grep "/dev/${dev}"|awk '{print $2}'`
+				return 0
+			else
+				if [ ! -d "${MountPath}/${dev}" ];then
+					mkdir "${MountPath}/${dev}"
+				fi
+				${MOUNTPOINT} "${MountPath}/${dev}" 1>/dev/null
+				if [ "$?" == "1" ];then
+					#not mounted
+					#TODO: support other fs_type?
+					if [ "${fs_type}" == "ntfs" ];then
+						fs_type=ntfs-3g
+					fi
+					if [ "${fs_type}" != "" ];then
+						echo "try to mount -t ${fs_type} /dev/${dev} on ${MountPath}/${dev}  "
+						mount -t ${fs_type} "/dev/${dev}" "${MountPath}/${dev}"
+						if [ "$?" == "0" ];then
+							return_val="${MountPath}/${dev}"
+							return 0
+						else
+							return 1
+						fi
+					else
+						echo "unknown fs_type"
+						return 1
+					fi
+				else
+					return_val="${MountPath}/${dev}"
+					echo "/dev/${dev} already mounted at ${MountPath}/${dev}"
+					return 0
+				fi
+			fi
+		else
+			return_val=""
+			echo "/dev/${dev} unknown fs_type"
+			return 1
+		fi
+	else
+		echo "did not specify device!"
+		return 1
+	fi
+}
+
+function umountDev () {
+	local d=""
+	local m=""
+	if [ "$1" == "" ];then
+		echo "not specify device to umount"
+		return 1
+	fi
+	d=$1
+	m=`cat /proc/mounts |grep "${d}"|awk '{print $2}'`
+	if [ "${m}" != "" ];then
+		echo "${d} mounted, try to unmount it from ${m}"
+		umount ${d}
+		if [ "$?" == "1" ];then
+			echo "umount fail!!"
+			return 1
+		fi
+		echo "remove ${m}"
+		rm -rf ${m}
+		return 0
+	else
+		return 0
+	fi
+}
+
+function updatePlist () {
+	#not show swap, extended
+	#TODO: any otherthings not going to show?
+	plist=`echo "${partlist}" \
+		   |grep -v "swap" \
+		   |grep -v "Extended" \
+		   |grep -v "Win95Ext"`
+	if [ "$plist" == "" ];then
+		ErrorMsg "Did not found any partition! Please check the SCSI/SATA/ATA driver loaded." 20
+	fi
+}
+#mount all partition except the device to be save/restore?(DISK can't be mounted too)
+#if selected device is DISK, all of it's paration should not mounted
+function mountALL () {
+	local dname=""
+	local dev=""
+	local lmax=0
+	dname=`basename ${pDevice}`
+	updatePlist;
+	echo "${plist}"|grep -v "${dname}"|grep -v "DISK" 1>${tempfilePM}
+	#get total number of line
+#	lmax=`awk 'END { print NR }' ${tempfilePM}`
+	(while read LINE
+	do
+		if [ "${LINE}" != "" ];then
+			dev=`echo "${LINE}"|awk '{print $1}'`
+			#echo "$dev"
+			mountDev $dev
+		fi
+	done < ${tempfilePM})  |dialog --progressbox  ${radiolistH} ${maxW}
+	#unmount select device
+	if [ "${pDevice}" != "" ];then
+		umountDev ${pDevice}
+	fi
+}
+
+#auto restore mode
+function auto () {
+	local a=""
+	local d=""
+	local p=""
+	local src=""
+	local dest=""
+	local finish=""
+	local src_p=""
+	local mp=""
+	local imagefile=""
+	declare -i i=1
+	declare -i j=0
+	declare -i length=0
+
+	APP_AUTO=1
+	if [ "${PARTIMAGE_CMD}" != "" ];then
+		a=`echo "${PARTIMAGE_CMD}"|awk -F"," '{print $1" "$2" "$3" "$4}'`
+		pTool="partimage"
+	fi
+	if [ "${PARTCLONE_CMD}" != "" ];then
+		a=`echo "${PARTCLONE_CMD}"|awk -F"," '{print $1" "$2" "$3" "$4}'`
+		pTool="partclone"
+	fi
+	if [ "${a}" != "" ];then
+		for x in ${a};do
+			case $x in
+				action*)
+					pAction=${x#action=}
+				;;
+				src*)
+					src=${x#src=}
+				;;
+				dest*)
+					dest=${x#dest=}
+				;;
+				finish*)
+					finish=${x#finish=}
+				;;
+			esac
+		done
+		if [ "${pAction}" == "restore" ];then
+			#restore: src is imagefile
+			#get src partition
+			j=`expr index ${src} "/"`
+			if [ $j -gt 0 ];then
+				length=`expr $j - 1`
+				d=`expr substr ${src} 1 $length`
+				length=`expr ${#src} - $j + 1 `
+				imagefile=`expr substr ${src} $j $length`
+				pnum2dev $d
+				if [ "$?" == "0" ];then
+					d=${return_val}
+				fi
+				#echo "pnum2dev: $d"
+				#sleep 10
+				src_p=$d
+				mountDev $src_p
+				if [ "$?" == "0" ];then
+					mp=$return_val
+				fi
+				#echo "mountDev: $mp"
+				#sleep 10
+				if [ "${mp}" != "" ];then
+					#check if it is mounted
+					if [ -e "${mp}${imagefile}" ];then
+						pImageFile=${mp}${imagefile}
+					else
+						ErrorMsg "restore image not found :${mp}${imagefile}" 1003
+					fi
+				else
+					ErrorMsg "$src_p mount fail" 1002
+				fi
+			else
+				ErrorMsg "src format may be wrong:${src}\n
+				should be <disk num>:<partition num><path to image file>
+				 eq: 1:5/BackupPath/xxx.partimg.gz" 1001
+			fi
+			#target partition
+			pnum2dev $dest
+			if [ "$?" == "0" ];then
+				d=${return_val}
+			fi
+			pDevice=${d}
+			umountDev ${pDevice}
+			if [ "$?" != "0" ];then
+				ErrorMsg "umountDev:${pDevice} fail !!" 1005
+			fi
+			if [ "${src_p}" == "${pDevice}" ];then
+				ErrorMsg "source partition should not same as dest partition" 1002
+			fi
+			if [ "${finish}" == "reboot" ];then
+				pFinish="2"
+			else
+				pFinish="3"
+			fi
+			$DIALOG --backtitle "$backtitle"  \
+				--pause "System is going to ${pAction}
+Image Filename: ${pImageFile}
+Target Device : ${pDevice}
+Tool		  : ${pTool}
+Finish action : ${pFinish} (${finish})" \
+				${maxH} ${maxW} 10
+			case $? in
+				$DIALOG_OK)
+					if [ "${pAction}" == "save" ];then
+						setStep 9
+					else
+						setStep 8
+					fi
+				;;
+				$DIALOG_CANCEL)
+					setStep 1
+				;;
+				$DIALOG_ESC)
+					ErrorMsg "" 0
+				;;
+			esac
+		else
+			setStep 0
+			ErrorMsg "current not supportted Action:${pAction}"
+		fi
+	else
+		setStep 1
+	fi
+}
+
+#get mount path from a path
+function getMountPath () {
+	local m=""
+	local a=""
+	local p1=""
+	local p2=""
+	a="${1}"
+	return_val=""
+
+	p1=`echo "$a" | awk -F"/" '{print $2}'`
+	p2=`echo "$a" | awk -F"/" '{print $3}'`
+	if [ "${p1}" != "mnt" ];then
+		return_val=""
+		return 1
+	fi
+	m=`cat /proc/mounts |grep "/${p1}/${p2}"`
+	if [ "${m}" != "" ];then
+		return_val="/${p1}/${p2}"
+		return 0
+	else
+		return_val=""
+		return 1
+	fi
+}
+
+function ErrorMsg () {
+	local msg=""
+	msg=$1
+	if [ "${msg}" != "" ];then
+		$DIALOG --backtitle "$backtitle"  --clear  \
+			--msgbox "${msg}" ${maxH} ${maxW}
+	fi
+	if [ "$2" != "" ];then
+		setStep -1
+		rm ${LCK_FILE}
+		exit $2
+	fi
+}
+
+#introduce
+function introduce () {
+	$DIALOG --backtitle "$backtitle"  --clear  \
+		--pause "  This script use partclone as backup/restore tool.
+
+NOTICE: The backup partition can't be restore to a partition size that is smaller then the backup partition" \
+		${maxH} ${maxW} 10
+	case $? in
+		$DIALOG_ESC)
+			ErrorMsg "" 0
+		;;
+	esac
+}
+
+#support
+function support () {
+	$DIALOG --backtitle "$backtitle"  --clear  \
+		--pause "following filesystem are supported:
+	Linux		:Btrfs, Ext2/Ext3/Ext4, Reiserfs/Reiser4
+	Windows		:FAT16/32, NTFS
+	MAC OS X	:HFS plus
+	FreeBSD		:UFS2
+	ESX			:VMFS" \
+		${maxH} ${maxW} 10
+	case $? in
+		$DIALOG_ESC)
+			ErrorMsg "" 0
+		;;
+	esac
+
+}
+
+#supportNTFS, partimage
+function supportNTFS () {
+	$DIALOG --backtitle "$backtitle"  --clear  \
+		--pause "The NTFS (Windows NT File System) is currently not fully supported:
+	this means you will be able to save an NTFS partition if system files are not very fragmented, and if system files are not compressed.
+	In this case, you will be able to save the partition into an image file, and you will be able to restore it after. If there is a problem when saving, an error message will be shown and you won't be able to continue. If you have successfully saved an NTFS NTFS partition, you shouldn't have problems as you restore it (except in the case of bugs). Then the best way is to try to save a partition to know if it is possible. If not, try to defragment it with diskeeper or another tool, and try to saving the partition again. " \
+		${maxH} ${maxW} 10
+	case $? in
+		$DIALOG_ESC)
+			ErrorMsg "" 0
+		;;
+	esac
+
+}
+
+#check if any disk driver (ata,sata,scsi) are ready
+function diskReady () {
+	local m=""
+	blkid >/dev/null
+	if [ "$?" == "0" ] ;then
+		return 0
+	else
+		#try fdisk -l
+		m=`fdisk -l`
+		if [ "${m}" != "" ];then
+			return_val="may be there is no usable partition"
+			return 0
+		else
+			return_val="ide driver not loaded!"
+			return 1
+		fi
+	fi
+}
+
+function isRun () {
+	if [ -f "${LCK_FILE}" ]; then
+
+	  # The file exists so read the PID
+	  # to see if it is still running
+	  MYPID=`head -n 1 "${LCK_FILE}"`
+	#busybox's ps do not have -p -a
+	#  TEST_RUNNING=`ps -p ${MYPID} | grep ${MYPID}`
+	  TEST_RUNNING=`ps | grep ${MYPID} | grep -v "grep "`
+	  if [ -z "${TEST_RUNNING}" ]; then
+		# The process is not running
+		# Echo current PID into lock file
+#		echo "Not running"
+		mRun
+		if [ "$?" == "0"  ];then
+			return 0
+		else
+			return 301
+		fi
+	  else
+		ErrorMsg "`basename $0` is already running [${MYPID}]" 302
+		return 302
+	  fi
+
+	else
+#	  echo "Not running"
+	  mRun
+   	  if [ "$?" == "0" ];then
+			return 0
+	  else
+			return 303
+	  fi
+	fi
+
+}
+
+function mRun () {
+	echo $$ > "${LCK_FILE}"
+	chmod -w "${LCK_FILE}"
+	LOCK=`cat "${LCK_FILE}"`
+	if [ "$LOCK" != "$$" ];then
+		ErrorMsg "Whoops! content of ${LCK_FILE} not equal to $$" 999
+		return 1
+	else
+		return 0
+	fi
+}
+
+if [ "root" != "`whoami`" ];then
+	ErrorMsg "this script should run with root!" 0
+fi
+
+isRun
+if [ "$?" != "0" ];then
+	ErrorMsg "another $0 is running" 2000
+fi
+
+#main
+if [ "$1" != "" ];then
+	case "$1" in
+		"--help")
+			echo "Usage: run $0 using following command"
+			echo "source $0"
+		;;
+		"-v")
+			echo "${projectname} ver:${version}-${verdate}"
+		;;
+		"-exec")
+			if [ "$2" != "" ];then
+				echo "execute function $2"
+				$2 $3 $4 $5
+			fi
+		;;
+		*)
+			$0 -v
+			$0 --help
+		;;
+	esac
+else
+
+	diskReady
+	if [ "$?" != "0" ];then
+		ErrorMsg "${return_val} !" 2001
+	fi
+
+	source ${MY_PATH}/kernelcmd
+
+	getMaxHW;
+	getRadioListH;
+	getPartlist;
+	getDisklist;
+	#sleep 10
+	#pwized=1, using at there is "partimage=..." value in /proc/cmdline but still need to run manual.
+	if [ "${PARTIMAGE_CMD}" ]||[ "${PARTCLONE_CMD}" ]&&[ "${pwized}" != "1" ];then
+		#auto will set APP_AUTO=1
+		auto
+		#when it finish running, manual mode should not run
+	fi
+	if [ "$?" == "0" ]&&[ "${APP_AUTO}" == "0" ];then
+		#manual
+		introduce;
+		support;
+		#supportNTFS;
+	fi
+	while [ "${step}" != "-1" ]; do
+		#echo "execute step: ${step}"
+		step${step}
+	done;
+
+fi
+

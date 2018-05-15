@@ -1,0 +1,16 @@
+#!/bin/sh
+: ${DIALOG=dialog}
+: ${base=ftp://1:1@192.168.0.90/partwized/}
+#echo update partwized.img.gz
+exec 3>&1
+res=`${DIALOG}  --yesno "wget kernel from ${base}vmlinuz?" 0 0 2>&1 1>&3`
+exec 3>&-
+if [ "$res" == "0" ];then
+	wget -c ${base}vmlinuz
+fi
+exec 3>&1
+res=`${DIALOG}  --yesno "wget root file system from ${base}partwized.img.gz?" 0 0 2>&1 1>&3`
+exec 3>&-
+if [ "$res" == "0" ];then
+	wget -c ${base}partwized.img.gz
+fi

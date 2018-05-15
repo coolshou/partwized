@@ -1,0 +1,247 @@
+#!/bin/sh
+#Script to be executed by busybox at bootup
+#
+#Modify to your needs
+#
+#link: ln -s <this script> /etc/init.d/rcS
+#link: ln -s bin/busybox /init
+#in rootfs create cpio base initramfs with command
+# find . | cpio -H newc -o | gzip -9 -n > ../${initrd}
+#
+
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/partwized
+export SHELL=/bin/bash
+export LANG=C
+
+# like echo, but only if no "splash" boot option is present
+message(){
+ [ -n "$SPLASH" ] || echo "$@"
+}
+
+message "Loading, please wait..."
+
+#load color define
+message "load color"
+. /partwized/color
+message "load functions"
+. /partwized/functions
+
+#[ -d /dev ] || mkdir -m 0755 /dev
+#[ -d /root ] || mkdir -m 0700 /root
+#[ -d /sys ] || mkdir /sys
+#[ -d /proc ] || mkdir /proc
+#[ -d /tmp ] || mkdir /tmp
+#mkdir -p /var/lock
+
+#mount -t sysfs -o nodev,noexec,nosuid none /sys
+mount -t sysfs sysfs /sys
+# Note that this only becomes /dev on the real filesystem if udev's scripts
+# are used; which they will be, but it's worth pointing out
+tmpfs_size="10M"
+if [ -e /etc/udev/udev.conf ]; then
+	. /etc/udev/udev.conf
+fi
+mount -t tmpfs -o size=$tmpfs_size,mode=0755 udev /dev
+
+if [ ! -e /dev/null ];then
+	mknod -m 644 /dev/null c 1 3
+fi
+
+mknod -m 644 /dev/console c 5 1
+mknod -m 644 /dev/mem c 1 1
+mknod -m 644 /dev/ram0 b 1 0
+ln -s /dev/ram0 /dev/ram
+mknod -m 644 /dev/tty c 5 0
+mknod -m 644 /dev/tty1 c 4 1
+mknod -m 644 /dev/tty2 c 4 2
+mknod -m 644 /dev/tty3 c 4 3
+mknod -m 644 /dev/tty4 c 4 4
+
+#main
+# Clean input/output
+exec >/dev/console </dev/console 2>&1
+
+#mount -t proc -o node,noexec,nosuid none /proc
+mount -t proc proc /proc
+# Disable kernel messages while probing modules in autodetect mode
+echo "0" > /proc/sys/kernel/printk
+
+[ -r /etc/mtab ] && ln -snf /proc/mounts /etc/mtab
+
+#/dev/pts
+if [ ! -e /dev/pts ];then
+	mkdir /dev/pts
+fi
+mount -t devpts devpts /dev/pts
+chmod 755 /dev/pts
+mknod /dev/ptmx c 5 2   #for telnet/ssh server use
+
+
+# Export the dpkg architecture
+#export DPKG_ARCH=
+#. /conf/arch.conf
+
+. /scripts/functions
+#depmod -a
+
+if [ "1" = "1" ]; then
+maybe_break top
+[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/init-top"
+run_scripts /scripts/init-top
+[ "$quiet" != "y" ] && log_end_msg
+
+maybe_break modules
+[ "$quiet" != "y" ] && log_begin_msg "Loading essential drivers"
+load_modules
+[ "$quiet" != "y" ] && log_end_msg
+
+maybe_break premount
+[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/init-premount"
+run_scripts /scripts/init-premount
+[ "$quiet" != "y" ] && log_end_msg
+
+maybe_break bottom
+[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/init-bottom"
+run_scripts /scripts/init-bottom
+[ "$quiet" != "y" ] && log_end_msg
+fi
+
+TOTALMEM=0
+amount=$(awk -F: '/^MemTotal/{printf "%d",int($2); exit 0}' /proc/meminfo 2>/dev/null); #'
+test "$amount" -gt "0" >/dev/null 2>&1 && let TOTALMEM=$amount/1024
+read a b KERNEL relax >/dev/null 2>&1 </proc/version
+
+
+# Be verbose
+message "${WHITE}Welcome to the ${CYAN}p${MAGENTA}a${YELLOW}r${WHITE}t${RED}w${GREEN}i${BLUE}z${WHITE}e${YELLOW}d${WHITE} live GNU/Linux ${NORMAL}"
+# Print kernel info
+message "${GREEN}Linux Kernel ${YELLOW}$KERNEL${GREEN}, ${MAGENTA}$TOTALMEM${GREEN} MB RAM.${NORMAL}"
+# Print CPU info
+message -n "${GREEN}"
+[ -n "$SPLASH" ] || awk -F: '/^processor/{printf "CPU"$2":\t"};/^model name/{printf $2};/^vendor_id/{printf vendor};/^cpu MHz/{printf " @ %dMHz",int($2)};/^cache size/{printf ","$2" Cache"};/^$/{print ""}' /proc/cpuinfo 2>/dev/null
+message -n "${NORMAL}"
+
+#@@@GvR add "ramdisk" parameter to allow specifying ramdisk size, otherwise just use max(ram*4/5,2000)M
+#for i in $CMDLINE; do case "$i" in [Rr][Aa][Mm][Dd][Ii][Ss][Kk]=*) eval $i;; esac; done
+#case "$ramdisk" in
+# [0-9]*[KMG]) RAMDISK="$ramdisk" ;;
+#esac
+#if [ -z "$RAMDISK" ]; then
+# if [ "$TOTALMEM" -ge 2000 ] >/dev/null 2>&1; then
+#   RAMDISK="$(expr $TOTALMEM / 5)"; RAMDISK="$(expr $RAMDISK \* 4)M"
+# else
+#   # Too large, but we can still use swapspace
+#   RAMDISK="2G"
+# fi
+#fi
+#@@@GvR
+
+#set hostname to whatever you want, does not matter
+hostname partwized
+
+#parser /proc/cmdline
+#source /partwized/kernelcmd
+
+#TODO:for qemu CLGD 5446 PCI VGA
+
+# mount additional ramdisk for overlay
+#mount -t tmpfs -o size="$RAMDISK",dev,suid,exec tmpfs /ramdisk
+
+#bring up the local loopback
+ifconfig lo 127.0.0.1
+route add -net 127.0.0.0 netmask 255.0.0.0 lo
+
+#bring up other network interface
+if [ -e "/proc/net/dev" ];then
+	#check other net device such as wireless
+	m=`cat /proc/net/dev|grep -v "Inter-"|grep -v "face"|awk -F":" '{print $1}'`
+	for a in ${m}
+	do
+		if [ "${a}" != "lo" ];then
+			#only bring up ethX
+			if [ `echo ${a} |grep "eth"` ];then
+#				echo "ifconfig ${a} up"
+				#using udhcpc need kernel module af_packet
+				ifconfig ${a} up
+				echo "udhcpc -b -S -s /etc/udhcpc/default.script -i ${a} -p /var/run/udhcpc_${a}.pid & "
+				udhcpc -b -S -s /etc/udhcpc/default.script -i ${a} -p /var/run/udhcpc_${a}.pid &
+				#udhcpc -i ${a} &
+			fi
+		fi
+	done
+fi
+
+#disable screen blanking
+#setterm -blank 0
+
+#mouse support?
+#ln -s /dev/mice /dev/mouse
+if [ "`grep -o nogpm /proc/cmdline`" != "nogpm" ]; then
+	if [ -e `which gpm` ]; then
+		message "Add mouse support (gpm)"
+		gpm -m /dev/input/mice -t ps2
+	fi
+fi
+
+#TODO:
+# get all hdd:
+# get supported udma mode: hdparm -i <dev> | grep "UDMA modes:"
+# set from hight udma to low until successful: * mark as current udma setting
+# set all rest setting
+#		hdparm -c1 -d1 -A1 -u1 <dev> : -X66 for udma2, -X67 for udma3
+
+#hdd smart
+#echo "start hdd smartd"
+#/etc/init.d/smartd start
+
+## 4/29/2008 added to load telnetd if kernel boot parameter
+## telnetd=yes is found
+#telnetd=`cat /proc/cmdline | grep telnetd`;
+#if [ -n "$telnetd" ] ; then
+#	telnetd
+#fi
+#ssh server
+dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key 2>&1 1>/dev/null
+dropbearkey -t dss -f /etc/dropbear/dropbear_dss_host_key 2>&1 1>/dev/null
+dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key 2>&1 1>/dev/null
+
+chown -R 1000.0 /home/partwized
+
+echo "start ssh server"
+dropbear -B &
+if [ ! -e "/var/log" ];then
+	mkdir -p /var/log
+fi
+# for dropbear
+touch /var/log/lastlog
+
+
+#start logs
+message "start syslog & klogd"
+if [ ! -e "/usr/var/log" ];then
+	mkdir -p /usr/var/log
+fi
+touch /usr/var/log/messages
+syslogd &
+#klogd &
+
+#acpid 1.0.8
+#(need  /proc/acpi/event => kernel 2.6.24 deprecated)
+if [ -e /proc/acpi/event ];then
+	message "start acpid"
+	acpid  -s /var/run/acpid.socket
+fi
+
+#
+#disable console blank (default 600s = 10min)
+# add consoleblank=0 to kernel cmdline
+#cat /sys/module/kernel/parameters/consoleblank
+setterm -blank 0
+
+echo "6" > /proc/sys/kernel/printk
+
+if [ -n "$PARTIMAGE_CMD" ] || [ -n "$PARTCLONE_CMD" ];then
+	message "start partwized"
+	/partwized/partwized
+fi
+

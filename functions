@@ -1,0 +1,197 @@
+#!/bin/sh
+
+
+if [ "x${BLKID}" == "x" ];then
+	: ${BLKID=blkid}
+fi
+return_funval=""
+
+#get partition label
+getDevLabel () {
+	local m=""
+	return_fval=""
+	if [ "$1" == "" ];then
+		echo "please specify device"
+		return 1
+	fi
+	dev=$1
+	if [ ! -e "${dev}" ];then
+		echo "specify device ${dev} not exist"
+		return 2
+	fi
+	#check filesystem,label
+	m=`${BLKID} -s LABEL ${dev}|awk '{print $2}'`
+	if [ "${m}" != "" ];then
+		#remove LABEL="
+		m=${m#LABEL=\"}
+		#remove last "
+		return_fval=${m%\"}
+	else
+		echo "specify device ${dev} do not have LABEL"
+		return_fval="NONE(${dev})"
+		return 3
+	fi
+	return 0
+}
+
+read a b KERNEL relax >/dev/null 2>&1 </proc/version
+MODULE_DIRS="/lib/modules/$KERNEL"
+
+# Try to load the given module with optional parameters
+# module can be a full path or a module.ko name
+# (in which case $MODULE_DIRS is searched).
+# loadmodule module options...
+loadmodule () {
+	 MODULE="$1"; shift
+	 INSMOD="/sbin/modprobe"
+	 MODULE=${MODULE/.ko/}
+	 echo "${CRE}$INSMOD $MODULE" "$@" | sh
+	 return $?
+}
+
+# Load many modules at once
+# loadmodules TYPE(comment) module ...
+loadmodules () {
+	 TYPE="$1"; shift
+	 test -n "$INTERACTIVE" && echo "6" > /proc/sys/kernel/printk
+	 for m in "$@"; do
+	  echo -n "${CRE}${BLUE}Probing ${TYPE}... ${MAGENTA}$m${NORMAL}"
+	  if loadmodule "$m" >/dev/null 2>&1; then
+	   case "$TYPE" in scsi|SCSI) FOUND_SCSI="yes"; ;; esac
+	  fi
+	 done
+	 test -n "$INTERACTIVE" && echo "0" > /proc/sys/kernel/printk
+	 echo -n "${CRE}"
+}
+
+SCSI_PROBE=""
+getSCSI_PROBE () {
+	# Check for SCSI, use modules on bootfloppy first
+	ISA_SCSI="aha1740.ko aha1542.ko aha152x.ko pas16.ko  qlogicfas.ko  t128.ko u14-34f.ko wd7000.ko"
+	#old module not in 2.6.29: psi240i.ko qlogicfc.ko seagate.ko
+	SCSI_PROBE="$ISA_SCSI"
+	#not good on detected HW
+	# Trying to do kind of /proc/pci hardware detection
+	# SCSI detection using /sys/devices
+	for d in /sys/devices/*/*; do
+	 if test -r "$d"/class -a -r "$d"/vendor -a -r "$d"/device; then
+	  read CLASS  < "$d"/class 2>/dev/null
+	  case "$CLASS" in 0x010*) 
+	   read VENDOR < "$d"/vendor 2>/dev/null
+	   read DEVICE < "$d"/device 2>/dev/null
+	   case "$VENDOR:$DEVICE" in
+		*1000:*00[0-2]?) SCSI_PROBE="$SCSI_PROBE sym53c8xx.ko" ;;
+		*1000:*040?|*1000:*196?|*101e:*196?|*1028:*000[ef]|*1028:*0013) SCSI_PROBE="$SCSI_PROBE megaraid_mbox.ko" ;;
+		*1000:*04[1-9]?|*1028:*0015) SCSI_PROBE="$SCSI_PROBE megaraid_sas.ko" ;;
+		*1001:*9100|*1101:*) SCSI_PROBE="$SCSI_PROBE initio.ko" ;;
+		*9004:*|*9005:*00??) SCSI_PROBE="$SCSI_PROBE aic7xxx.ko" ;;
+		*1011:*|*1028:*000[1-9a]|*9005:*02[08]?) SCSI_PROBE="$SCSI_PROBE aacraid.ko" ;;
+		*1014:*002e|*1014:*01bd|*9005:*0250) SCSI_PROBE="$SCSI_PROBE ips.ko" ;;
+		*1014:*0[1-2]8?|*1069:*|*9005:*0503) SCSI_PROBE="$SCSI_PROBE ipr.ko" ;;
+		*1022:*) SCSI_PROBE="$SCSI_PROBE tmscsim.ko" ;;
+		*1044:*) SCSI_PROBE="$SCSI_PROBE dpt_i2o.ko" ;;
+		*1077:*1???) SCSI_PROBE="$SCSI_PROBE qla1280.ko" ;;
+		*1077:*21??) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko qla2100.ko" ;;
+		*1077:*22??) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko qla2200.ko" ;;
+		*1077:*23[0-1]?) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko qla2300.ko" ;;
+		*1077:*232?) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko qla2322.ko" ;;
+		*1077:*24??) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko" ;;
+		*1077:*63??) SCSI_PROBE="$SCSI_PROBE qla2xxx.ko qla6312.ko" ;;
+		*10df:*) SCSI_PROBE="$SCSI_PROBE lpfc.ko" ;;
+		*10fc:*|*1145:*) SCSI_PROBE="$SCSI_PROBE nsp32.ko" ;;
+		*1101:*) SCSI_PROBE="$SCSI_PROBE a100u2w.ko" ;;
+		*1119:*|*8086:*) SCSI_PROBE="$SCSI_PROBE gdth.ko" ;;
+		*1191:*) SCSI_PROBE="$SCSI_PROBE atp870u.ko" ;;
+		*134a:*) SCSI_PROBE="$SCSI_PROBE dmx3191d.ko" ;;
+		*1de1:*) SCSI_PROBE="$SCSI_PROBE dc395x.ko" ;;
+		*9005:*8???) SCSI_PROBE="$SCSI_PROBE aic79xx.ko" ;;
+		*104b:*) SCSI_PROBE="$SCSI_PROBE BusLogic.ko" ;;
+		*1[0d]e1:*) SCSI_PROBE="$SCSI_PROBE dc395x.ko" ;;
+		*1000:*00[34]?) SCSI_PROBE="$SCSI_PROBE mptscsih.ko" ;;
+		*10cd:*) SCSI_PROBE="$SCSI_PROBE advansys.ko" ;;
+		*1191:*) SCSI_PROBE="$SCSI_PROBE atp870u.ko" ;;
+		*134a:*) SCSI_PROBE="$SCSI_PROBE dtc.ko" ;;
+		*1d44:*) SCSI_PROBE="$SCSI_PROBE eata.ko" ;;
+		*1036:*) SCSI_PROBE="$SCSI_PROBE fdomain.ko" ;;
+		*1256:*4201) SCSI_PROBE="$SCSI_PROBE pci2220i.ko" ;;
+		*1256:*5201) SCSI_PROBE="$SCSI_PROBE pci2000.ko" ;;
+		*1022:*) SCSI_PROBE="$SCSI_PROBE tmscsim.ko" ;;
+		*6356:*) SCSI_PROBE="$SCSI_PROBE ultrastor.ko" ;;
+		*13c1:*) SCSI_PROBE="$SCSI_PROBE 3w-xxxx.ko" ;;
+		*1af4:*) SCSI_PROBE="$SCSI_PROBE ata_piix.ko" ;;
+	   esac
+	   ;;
+	  esac
+	 fi
+	done
+}
+
+loadIDE_Raid () {
+	# Check for IDE-Raid devices
+	if test -z "$NOIDERAID"; then
+	( { loadmodule ataraid.ko && loadmodule silraid.ko; } || loadmodule medley.ko || loadmodule pdcraid.ko ) >/dev/null 2>&1
+	fi
+	# End of IDE-Raid check
+}
+
+loadUSB () {
+	USB2="ehci-hcd"
+	
+	# Check for USB, use modules on bootfloppy first
+	if test -z "$NOUSB"; then
+	 echo -n "${CRE}${BLUE}Checking for USB...${NORMAL}"
+	 if loadmodule usbcore.ko >/dev/null 2>&1; then
+	  FOUNDUSB=""
+	  for i in $USB2 uhci-hcd ohci-hcd; do
+	   loadmodule $i >/dev/null 2>&1 && FOUNDUSB="yes"
+	  done
+	  if test -n "$FOUNDUSB"; then
+	   loadmodule libusual.ko >/dev/null 2>&1
+	   loadmodule ff-memless.ko >/dev/null 2>&1
+	   loadmodule usbhid.ko >/dev/null 2>&1
+	   loadmodule ub.ko >/dev/null 2>&1 || loadmodule usb-storage.ko >/dev/null 2>&1
+	  else
+	   # For an unknown reason, unloading usbcore hangs sometimes
+	   # rmmod usbcore >/dev/null 2>&1
+	   true
+	  fi
+	 fi
+	 echo -n "${CRE}"
+	fi
+	# End of USB check
+}
+
+loadFirewire () {
+	#if [ "0" == "1" ];then
+	#	echo "Probing Firewire devices..."
+	#	#firewire?
+	#	if [ "`grep -o nofirewire /proc/cmdline`" != "nofirewire" ]; then
+	#		modprobe -q ieee1394 >/dev/null 2>&1
+	#		modprobe -q ohci1394 >/dev/null 2>&1
+	#		modprobe -q sbp2 >/dev/null 2>&1
+	#	fi
+	#fi
+
+	# Check for Firewire, use modules on bootfloppy first
+	if test -z "$NOFIREWIRE"; then
+	 echo -n "${CRE}${BLUE}Checking for Firewire...${NORMAL}"
+	 if loadmodule ieee1394.ko >/dev/null 2>&1; then
+	  FOUNDFIREWIRE=""
+	  for i in ohci1394.ko; do
+	   echo -n "${CRE}${BLUE}Loading $i...${NORMAL}"
+	   loadmodule "$i" >/dev/null 2>&1 && FOUNDFIREWIRE="yes"
+	  done
+	  if test -n "$FOUNDFIREWIRE"; then
+	   echo -n "${CRE}${BLUE}Loading sbp2.ko...${NORMAL}"
+	   loadmodule sbp2.ko serialize_io=1 >/dev/null 2>&1
+	  else
+	   # For an unknown reason, unloading ieee1394 hangs sometimes
+	   # echo -n "${CRE}${BLUE}Unloading ieee1394...${NORMAL}"
+	   # rmmod ieee1394 >/dev/null 2>&1
+	   true
+	  fi
+	 fi
+	 echo -n "${CRE}"
+	fi
+	# End of FIREWIRE check
+}
